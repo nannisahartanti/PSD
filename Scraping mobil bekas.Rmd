@@ -1,0 +1,604 @@
+---
+title: "Untitled"
+author: "Nabila Yola Zahrani M0401241045"
+date: "2026-08-28"
+output: html_document
+---
+
+```{r}
+library(rvest)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(tibble)
+library(xml2)
+```
+
+```{r}
+base_url <- "https://www.carmudi.co.id/mobil-bekas-dijual/indonesia"
+```
+
+```{r}
+make_url <- function(page_number) {
+  paste0(
+    base_url,
+    "?page_number=", page_number,
+    "&page_size=25"
+  )
+}
+```
+
+```{r}
+make_url(1)
+```
+
+```{r}
+url_test <- make_url(1)
+
+page_test <- read_html(url_test)
+```
+
+```{r}
+page_test
+```
+
+```{r}
+titles <- page_test %>%
+  html_elements("h2") %>%
+  html_text2()
+
+titles
+```
+
+```{r}
+length(titles)
+```
+
+```{r}
+links <- page_test %>%
+  html_elements("a") %>%
+  html_attr("href")
+
+head(links, 30)
+
+length(links)
+```
+
+```{r}
+length(titles)
+```
+
+```{r}
+extract_year <- function(x) {
+  str_extract(x, "^\\d{4}")
+}
+
+extract_brand <- function(x) {
+  str_extract(x, "(?<=^\\d{4} )[^ ]+")
+}
+
+extract_model <- function(x) {
+  x %>%
+    str_remove("^\\d{4}\\s+") %>%
+    str_remove("^[^ ]+\\s+") %>%
+    str_squish()
+}
+
+x <- "2023 Honda BR-V 1.5 Prestige SUV"
+
+extract_year(x)
+extract_brand(x)
+extract_model(x)
+```
+
+```{r}
+length(titles)
+```
+
+```{r}
+head(titles, 10)
+```
+```{r}
+scrape_page <- function(page_number) {
+  
+  cat("Scraping halaman:", page_number, "\n")
+  
+  # URL halaman
+  url <- paste0(
+    "https://www.carmudi.co.id/mobil-bekas-dijual/indonesia",
+    "?page_number=", page_number,
+    "&page_size=25"
+  )
+  
+  # Ambil halaman
+  halaman <- read_html(url)
+  
+  # ==============================
+  # AMBIL JUDUL
+  # ==============================
+  
+  titles <- halaman %>%
+    html_elements("h2") %>%
+    html_text2() %>%
+    str_squish()
+  
+  # Hanya ambil judul yang diawali tahun
+  titles <- titles[
+    str_detect(titles, "^\\d{4}\\s")
+  ]
+  
+  # Kalau tidak ada data
+  if (length(titles) == 0) {
+    cat("Tidak ada listing di halaman", page_number, "\n")
+    return(data.frame())
+  }
+  
+  cat("Jumlah listing:", length(titles), "\n")
+  
+  
+  # ==============================
+  # AMBIL SEMUA TEXT HALAMAN
+  # ==============================
+  
+  teks <- halaman %>%
+    html_text2() %>%
+    str_squish()
+  
+  
+  # ==============================
+  # EKSTRAK TAHUN
+  # ==============================
+  
+  year <- str_extract(
+    titles,
+    "^\\d{4}"
+  )
+  
+  
+  # ==============================
+  # EKSTRAK BRAND
+  # ==============================
+  
+  brand <- str_extract(
+    titles,
+    "(?<=^\\d{4}\\s)[A-Za-zÀ-ÿ-]+"
+  )
+  
+  
+  # ==============================
+  # EKSTRAK MODEL
+  # ==============================
+  
+  model <- titles %>%
+    str_remove("^\\d{4}\\s+") %>%
+    str_remove("^[A-Za-zÀ-ÿ-]+\\s+") %>%
+    str_squish()
+  
+  
+  # ==============================
+  # BUAT DATAFRAME DASAR
+  # ==============================
+  
+  data <- data.frame(
+    title = titles,
+    year = year,
+    brand = brand,
+    model = model,
+    stringsAsFactors = FALSE
+  )
+  
+  
+  # ==============================
+  # AMBIL DATA DARI SETIAP LISTING
+  # ==============================
+  
+  # Cari parent/container dari setiap judul
+  title_nodes <- halaman %>%
+    html_elements("h2") %>%
+    .[str_detect(html_text2(.), "^\\d{4}\\s")]
+  
+  
+  price <- character(length(titles))
+  mileage <- character(length(titles))
+  transmission <- character(length(titles))
+  location <- character(length(titles))
+  seller_type <- character(length(titles))
+  listing_url <- character(length(titles))
+  
+  
+  for (i in seq_along(title_nodes)) {
+    
+    node <- title_nodes[[i]]
+    
+    # Ambil container listing
+    container <- node
+    
+    # Naik beberapa level sampai mendapat informasi listing
+    for (j in 1:6) {
+      
+      parent <- xml_parent(container)
+      
+      if (length(parent) == 0) {
+        break
+      }
+      
+      parent_text <- parent %>%
+        html_text2() %>%
+        str_squish()
+      
+      # Container yang cukup besar biasanya sudah berisi
+      # harga + KM + transmisi + lokasi
+      if (
+        str_detect(parent_text, "Rp\\s*[0-9]") &&
+        (
+          str_detect(parent_text, "KM") ||
+          str_detect(parent_text, "Automatic") ||
+          str_detect(parent_text, "Manual")
+        )
+      ) {
+        container <- parent
+        break
+      }
+      
+      container <- parent
+    }
+    
+    
+    txt <- container %>%
+      html_text2() %>%
+      str_squish()
+    
+    
+    # ==========================
+    # PRICE
+    # ==========================
+    
+    price[i] <- str_extract(
+      txt,
+      "Rp\\s*[0-9\\.]+"
+    )
+    
+    
+    # ==========================
+    # MILEAGE
+    # ==========================
+    
+    mileage[i] <- str_extract(
+      txt,
+      "[0-9]+\\s*-\\s*[0-9]+K\\s*KM|[0-9]+K\\s*KM|[0-9]+\\s*KM"
+    )
+    
+    
+    # ==========================
+    # TRANSMISSION
+    # ==========================
+    
+    transmission[i] <- str_extract(
+      txt,
+      "\\b(Automatic|Manual)\\b"
+    )
+    
+    
+    # ==========================
+    # LOCATION
+    # ==========================
+    
+    lokasi_list <- c(
+      "DKI Jakarta",
+      "Banten",
+      "Jawa Barat",
+      "Jawa Tengah",
+      "Jawa Timur",
+      "Yogyakarta",
+      "Bali",
+      "Sumatera Utara",
+      "Sumatera Barat",
+      "Sumatera Selatan",
+      "Riau",
+      "Jambi",
+      "Lampung",
+      "Bengkulu",
+      "Kepulauan Riau",
+      "Kalimantan Barat",
+      "Kalimantan Timur",
+      "Kalimantan Tengah",
+      "Sulawesi Selatan",
+      "Sulawesi Utara",
+      "Sulawesi Tengah",
+      "Sulawesi Tenggara",
+      "Sulawesi Barat",
+      "Maluku",
+      "Maluku Utara",
+      "Papua",
+      "Nusa Tenggara Barat",
+      "Nusa Tenggara Timur"
+    )
+    
+    lokasi_regex <- paste(
+      lokasi_list,
+      collapse = "|"
+    )
+    
+    location[i] <- str_extract(
+      txt,
+      lokasi_regex
+    )
+    
+    
+    # ==========================
+    # SELLER TYPE
+    # ==========================
+    
+    if (str_detect(txt, "\\bPrivate\\b")) {
+      seller_type[i] <- "Private"
+      
+    } else if (str_detect(txt, "\\bDealer\\b")) {
+      seller_type[i] <- "Dealer"
+      
+    } else {
+      seller_type[i] <- NA_character_
+    }
+    
+    
+    # ==========================
+    # URL
+    # ==========================
+    
+    link <- container %>%
+      html_element("a") %>%
+      html_attr("href")
+    
+    if (!is.na(link) && length(link) > 0) {
+      
+      if (str_detect(link, "^/")) {
+        link <- paste0(
+          "https://www.carmudi.co.id",
+          link
+        )
+      }
+      
+      listing_url[i] <- link
+      
+    } else {
+      listing_url[i] <- NA_character_
+    }
+  }
+  
+  
+  # ==============================
+  # MASUKKAN HASIL
+  # ==============================
+  
+  data$price <- price
+  data$mileage <- mileage
+  data$transmission <- transmission
+  data$location <- location
+  data$seller_type <- seller_type
+  data$url <- listing_url
+  
+  
+  # ==============================
+  # BERSIHKAN TEXT
+  # ==============================
+  
+  data <- data %>%
+    mutate(
+      across(
+        where(is.character),
+        ~ str_squish(.x)
+      )
+    )
+  
+  
+  return(data)
+}
+```
+
+```{r}
+data_page1 <- scrape_page(1)
+```
+
+```{r}
+# ==========================================
+# SCRAPING 80 HALAMAN
+# ==========================================
+
+data_semua <- list()
+
+for (i in 1:80) {
+  
+  hasil <- tryCatch(
+    scrape_page(i),
+    error = function(e) {
+      cat(
+        "ERROR halaman", i,
+        ":", e$message, "\n"
+      )
+      return(data.frame())
+    }
+  )
+  
+  # Simpan kalau halaman berhasil mendapatkan data
+  if (nrow(hasil) > 0) {
+    data_semua[[length(data_semua) + 1]] <- hasil
+  }
+  
+  # Jeda supaya website tidak terlalu cepat dibebani
+  Sys.sleep(1)
+}
+
+# ==========================================
+# GABUNGKAN SEMUA DATA
+# ==========================================
+
+data_mobil <- bind_rows(data_semua)
+
+# Jumlah data
+cat("TOTAL DATA:", nrow(data_mobil), "\n")
+
+# Lihat data
+head(data_mobil)
+
+# Struktur data
+str(data_mobil)
+```
+
+```{r}
+# ==========================================
+# CEK DATA HASIL SCRAPING
+# ==========================================
+
+dim(data_mobil)
+
+str(data_mobil)
+
+# Jumlah missing tiap variabel
+colSums(is.na(data_mobil))
+
+# Jumlah duplikat URL
+sum(duplicated(data_mobil$url))
+
+# Lihat 10 data pertama
+head(data_mobil, 10)
+```
+
+```{r}
+# ==========================================
+# CLEANING MILEAGE
+# ==========================================
+
+data_mobil <- data_mobil %>%
+  mutate(
+    mileage_clean = str_extract_all(
+      mileage,
+      "[0-9]+"
+    )
+  )
+```
+
+```{r}
+# ==========================================
+# CLEANING CATEGORICAL VARIABLES
+# ==========================================
+
+data_mobil <- data_mobil %>%
+  mutate(
+    brand = str_squish(brand),
+    model = str_squish(model),
+    transmission = str_squish(transmission),
+    location = str_squish(location),
+    seller_type = str_squish(seller_type)
+  )
+```
+
+```{r}
+data_mobil %>%
+  select(title, year, brand, model) %>%
+  head(20)
+```
+
+```{r}
+# ==========================================
+# DATASET FINAL
+# ==========================================
+
+data_final <- data_mobil %>%
+  select(
+    year,
+    brand,
+    model,
+    price,
+    mileage_clean,
+    transmission,
+    location,
+    seller_type,
+    url
+  ) %>%
+  rename(
+    mileage = mileage_clean
+  )
+
+# Lihat hasil
+head(data_final, 10)
+
+# Struktur
+str(data_final)
+
+# Jumlah baris
+nrow(data_final)
+
+# Jumlah kolom
+ncol(data_final)
+```
+```{r}
+str(data_final)
+```
+
+```{r}
+data_final$mileage <- sapply(data_final$mileage, function(x) {
+  if (length(x) == 0) {
+    NA_character_
+  } else {
+    paste(x, collapse = " - ")
+  }
+})
+```
+
+```{r}
+library(writexl)
+
+write_xlsx(
+  data_final,
+  "dataset_mobil_carmudi.xlsx"
+)
+```
+
+```{r}
+getwd()
+```
+```{r}
+write_xlsx(
+  data_final,
+  "C:/Users/Na'aila/Documents/dataset_mobil_carmudi.xlsx"
+)
+```
+
+```{r}
+data_final <- data_final |>
+  filter(
+    !is.na(year) & year != "",
+    !is.na(brand) & brand != "",
+    !is.na(model) & model != "",
+    !is.na(price) & price != "",
+    !is.na(mileage) & mileage != "",
+    !is.na(transmission) & transmission != "",
+    !is.na(location) & location != ""
+  )
+```
+
+
+```{r}
+nrow(data_final)
+colSums(is.na(data_final))
+```
+```{r}
+nrow(data_final)
+```
+```{r}
+
+write_xlsx(
+  data_final,
+  "dataset_mobil_carmudi_bersih.xlsx"
+)
+
+```
+```{r}
+getwd()
+```
+```{r}
+write_xlsx(
+  data_final,
+ "C:/Users/Na'aila/Documents/Semester 5/PSD/datasetmobil_bersih.xlsx"
+)
+```
+
